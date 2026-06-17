@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 
 	"github.com/Zouriel/zcoms-sdk/agent"
+	"github.com/Zouriel/zcoms-sdk/ipc"
 	"github.com/Zouriel/zcoms-team/internal/db"
 	"github.com/Zouriel/zcoms-team/internal/store"
 )
@@ -27,8 +28,9 @@ func teamSocketPath() string {
 }
 
 type cmdRequest struct {
-	Text  string `json:"text"`            // a `zc team …` command line
-	Actor string `json:"actor,omitempty"` // who issued it (@username or local user)
+	Text   string           `json:"text"`             // a `zc team …` command line
+	Actor  string           `json:"actor,omitempty"`  // who issued it (@username or local user)
+	Result *InterviewResult `json:"result,omitempty"` // a standup interview result posted back by errands
 }
 
 type cmdResponse struct {
@@ -58,10 +60,21 @@ func main() {
 	if set, _, err := agent.LoadOrSeedSettings(); err == nil {
 		mainUser = set.MainUser
 	}
-	serveCommands(NewEngine(s, mainUser))
+	e := NewEngine(s, mainUser)
+
+	// IPC client to the daemon (for posting standup reports to Telegram groups).
+	// Tolerate the daemon being down — reports just won't post until it's up.
+	var client *ipc.Client
+	if c, err := ipc.NewDefault(); err == nil {
+		client = c
+	}
+	co := NewCoordinator(e, client)
+	go co.RunScheduler()
+
+	serveCommands(e, co)
 }
 
-func serveCommands(e *Engine) {
+func serveCommands(e *Engine, co *Coordinator) {
 	path := teamSocketPath()
 	_ = os.Remove(path)
 	l, err := net.Listen("unix", path)
@@ -89,6 +102,12 @@ func serveCommands(e *Engine) {
 			var req cmdRequest
 			if json.Unmarshal(line, &req) != nil {
 				writeResp(c, cmdResponse{Error: "bad request"})
+				return
+			}
+			// A standup interview result posted back by the errands component.
+			if req.Result != nil {
+				co.OnResult(*req.Result)
+				writeResp(c, cmdResponse{OK: true})
 				return
 			}
 			actor := req.Actor

@@ -1,0 +1,265 @@
+package main
+
+import (
+	"bufio"
+	"encoding/json"
+	"fmt"
+	"log"
+	"net"
+	"path/filepath"
+	"sync"
+	"time"
+
+	"github.com/Zouriel/zcoms-sdk/agent"
+	"github.com/Zouriel/zcoms-sdk/ipc"
+	"github.com/Zouriel/zcoms-team/internal/store"
+)
+
+// --- the team↔errands standup interview protocol ----------------------------
+
+// InterviewSpec is sent to the errands component to conduct one staff member's
+// standup interview; errands posts InterviewResult back to team.sock.
+type InterviewSpec struct {
+	RunID     string              `json:"run_id"`
+	StaffID   string              `json:"staff_id"`
+	Target    string              `json:"target"` // @telegram (or wa:NUMBER)
+	Greeting  string              `json:"greeting"`
+	Closing   string              `json:"closing"`
+	Callback  string              `json:"callback"` // socket file to post results to ("team.sock")
+	Questions []InterviewQuestion `json:"questions"`
+}
+
+type InterviewQuestion struct {
+	TaskID       string `json:"task_id"`
+	GithubItemID string `json:"github_item_id"`
+	Title        string `json:"title"`
+	Prompt       string `json:"prompt"`
+}
+
+type InterviewResult struct {
+	RunID   string            `json:"run_id"`
+	StaffID string            `json:"staff_id"`
+	Answers []InterviewAnswer `json:"answers"`
+}
+
+type InterviewAnswer struct {
+	TaskID       string `json:"task_id"`
+	GithubItemID string `json:"github_item_id"`
+	Title        string `json:"title"`
+	Response     string `json:"response"`
+}
+
+// Coordinator orchestrates standup runs: dispatch interviews to the errands
+// component, collect results via callback, sync GitHub, generate + post reports.
+type Coordinator struct {
+	e   *Engine
+	ipc *ipc.Client
+
+	mu   sync.Mutex
+	runs map[string]*runState // runID -> in-flight run
+}
+
+type runState struct {
+	run      *store.StandupRun
+	standup  *store.Standup
+	expected int
+	got      int
+}
+
+func NewCoordinator(e *Engine, c *ipc.Client) *Coordinator {
+	return &Coordinator{e: e, ipc: c, runs: map[string]*runState{}}
+}
+
+// Run executes one standup: create the run, then dispatch an interview per staff
+// member who has active tasks. finalize() posts the report once all reply (or a
+// watchdog times out).
+func (co *Coordinator) Run(su *store.Standup) {
+	date := time.Now().Format("2006-01-02")
+	if existing, _ := co.e.s.RunOn(su.ID, date); existing != nil && existing.Status != store.RunFailed {
+		return // already ran today
+	}
+	run, err := co.e.s.CreateStandupRun(su.ID, date)
+	if err != nil {
+		log.Printf("[standup] create run: %v", err)
+		return
+	}
+	staff, _ := co.e.s.ListStaff(su.DelegatorID)
+
+	type job struct {
+		st    *store.Staff
+		tasks []*store.Task
+	}
+	var jobs []job
+	for _, st := range staff {
+		tasks, _ := co.e.s.ActiveTasksFor(st.ID)
+		if len(tasks) > 0 {
+			jobs = append(jobs, job{st, tasks})
+		}
+	}
+	if len(jobs) == 0 {
+		_ = co.e.s.CompleteStandupRun(run.ID, "Daily Standup Summary\n\n(No active tasks to review.)")
+		co.postReport(su, "Daily Standup Summary\n\n(No active tasks today.)")
+		return
+	}
+
+	co.mu.Lock()
+	co.runs[run.ID] = &runState{run: run, standup: su, expected: len(jobs)}
+	co.mu.Unlock()
+
+	for _, j := range jobs {
+		co.dispatchInterview(run.ID, j.st, j.tasks)
+	}
+	// Watchdog: finalize with whatever arrived if interviews stall.
+	go func(runID string) {
+		time.Sleep(2 * time.Hour)
+		co.finalize(runID, true)
+	}(run.ID)
+}
+
+func (co *Coordinator) dispatchInterview(runID string, st *store.Staff, tasks []*store.Task) {
+	spec := InterviewSpec{
+		RunID:    runID,
+		StaffID:  st.ID,
+		Target:   st.TelegramUsername,
+		Greeting: "Good morning. A few minutes for today's standup? Let's review your current tasks.",
+		Closing:  "Thank you — I've recorded your updates.",
+		Callback: "team.sock",
+	}
+	for _, t := range tasks {
+		spec.Questions = append(spec.Questions, InterviewQuestion{
+			TaskID: t.ID, GithubItemID: t.GithubItemID, Title: t.Title,
+			Prompt: "Task: " + t.Title + "\nHow is this task progressing?",
+		})
+	}
+	// Dispatch to the errands component (errands.sock) — it conducts the
+	// conversation and posts the result back to team.sock.
+	dir, err := agent.DefaultAppDir()
+	if err != nil {
+		return
+	}
+	conn, err := net.DialTimeout("unix", filepath.Join(dir, "errands.sock"), 2*time.Second)
+	if err != nil {
+		log.Printf("[standup] errands component unreachable; can't interview %s", st.TelegramUsername)
+		return
+	}
+	defer conn.Close()
+	req, _ := json.Marshal(struct {
+		Interview *InterviewSpec `json:"interview"`
+	}{&spec})
+	_, _ = conn.Write(append(req, '\n'))
+	_ = conn.SetReadDeadline(time.Now().Add(10 * time.Second))
+	_, _ = bufio.NewReader(conn).ReadBytes('\n') // ack
+}
+
+// OnResult is invoked from the team.sock handler when errands posts a completed
+// interview. It stores updates, syncs GitHub + local task status, and finalizes
+// the run when everyone has reported.
+func (co *Coordinator) OnResult(res InterviewResult) {
+	co.mu.Lock()
+	rs := co.runs[res.RunID]
+	co.mu.Unlock()
+	if rs == nil {
+		return
+	}
+	for _, a := range res.Answers {
+		status, blocker := detectStatus(a.Response)
+		_ = co.e.s.AddTaskUpdate(&store.TaskUpdate{
+			StandupRunID: res.RunID, StaffMemberID: res.StaffID, GithubItemID: a.GithubItemID,
+			TaskTitle: a.Title, StaffResponse: a.Response, DetectedStatus: status, Blocker: blocker,
+		})
+		if status != "" && a.TaskID != "" {
+			// Move blocked/review locally + on GitHub (done keeps the task active
+			// unless the staff explicitly finished it; standups don't auto-close).
+			if status == store.StatusBlocked || status == store.StatusReview {
+				_ = co.e.s.SetTaskStatus(a.TaskID, status, "system")
+			}
+			co.syncGithub(a.GithubItemID, res.StaffID, status)
+		}
+	}
+	co.mu.Lock()
+	rs.got++
+	done := rs.got >= rs.expected
+	co.mu.Unlock()
+	if done {
+		co.finalize(res.RunID, false)
+	}
+}
+
+func (co *Coordinator) syncGithub(itemID, staffID, status string) {
+	if itemID == "" {
+		return
+	}
+	st, _ := co.e.s.StaffByID(staffID)
+	if st == nil {
+		return
+	}
+	del, _ := co.e.s.DelegatorByID(st.DelegatorID)
+	if del == nil {
+		return
+	}
+	if proj := co.e.resolveProject(del); proj != nil {
+		_ = proj.SetStatus(itemID, status)
+		co.e.s.Audit("system", "github_updated", "task", itemID, map[string]any{"status": status})
+	}
+}
+
+func (co *Coordinator) finalize(runID string, viaWatchdog bool) {
+	co.mu.Lock()
+	rs := co.runs[runID]
+	if rs == nil {
+		co.mu.Unlock()
+		return
+	}
+	delete(co.runs, runID)
+	co.mu.Unlock()
+
+	updates, _ := co.e.s.TaskUpdatesForRun(runID)
+	names := map[string]string{}
+	for _, u := range updates {
+		if _, ok := names[u.StaffMemberID]; !ok {
+			if st, _ := co.e.s.StaffByID(u.StaffMemberID); st != nil {
+				names[u.StaffMemberID] = st.TelegramUsername
+			}
+		}
+	}
+	report := generateReport(updates, names)
+	_ = co.e.s.CompleteStandupRun(runID, report)
+	co.postReport(rs.standup, report)
+}
+
+// postReport sends the report to the standup's Telegram group via the daemon IPC.
+func (co *Coordinator) postReport(su *store.Standup, report string) {
+	if co.ipc == nil {
+		return
+	}
+	if _, err := co.ipc.Send(su.TelegramGroup, report); err != nil {
+		log.Printf("[standup] couldn't post report to %s: %v", su.TelegramGroup, err)
+	}
+}
+
+// RunScheduler fires due standups every cycle (the per-run RunOn guard prevents
+// double-firing within the matching minute).
+func (co *Coordinator) RunScheduler() {
+	for {
+		time.Sleep(30 * time.Second)
+		sus, err := co.e.s.ListStandups("")
+		if err != nil {
+			continue
+		}
+		now := time.Now()
+		for _, su := range sus {
+			loc, err := time.LoadLocation(su.Timezone)
+			if err != nil {
+				loc = time.UTC
+			}
+			n := now.In(loc)
+			var hh, mm int
+			if _, e := fmt.Sscanf(su.ScheduleTime, "%d:%d", &hh, &mm); e != nil {
+				continue
+			}
+			if n.Hour() == hh && n.Minute() == mm {
+				go co.Run(su)
+			}
+		}
+	}
+}
