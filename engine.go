@@ -6,6 +6,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/Zouriel/zcoms-team/internal/github"
 	"github.com/Zouriel/zcoms-team/internal/store"
 )
 
@@ -19,6 +20,9 @@ type Engine struct {
 
 	mu     sync.Mutex
 	convos map[string]*conv // keyed by actor (@username)
+
+	ghMu    sync.Mutex
+	ghCache map[string]*github.Project // delegatorID -> resolved Projects v2 board
 }
 
 type conv struct {
@@ -30,7 +34,7 @@ type conv struct {
 }
 
 func NewEngine(s *store.Store, mainUser string) *Engine {
-	return &Engine{s: s, mainUser: normUser(mainUser), convos: map[string]*conv{}}
+	return &Engine{s: s, mainUser: normUser(mainUser), convos: map[string]*conv{}, ghCache: map[string]*github.Project{}}
 }
 
 func normUser(u string) string {
