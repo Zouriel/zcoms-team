@@ -41,13 +41,30 @@ func handleDelegator(s *store.Store, actor string, a []string) (string, error) {
 	}
 	switch a[0] {
 	case "create":
-		// delegator create <name> <github_owner> <project_number>
-		if len(a) != 4 {
-			return "", fmt.Errorf("usage: delegator create <name> <github_owner> <project_number>")
+		// delegator create <name> [<github_owner> <project_number>]
+		if len(a) != 2 && len(a) != 4 {
+			return "", fmt.Errorf("usage: delegator create <name> [<github_owner> <project_number>]")
+		}
+		if len(a) == 2 {
+			d, err := s.CreateLocalDelegator(a[1], actor)
+			if err != nil {
+				return "", err
+			}
+			return fmt.Sprintf("✅ Delegator %q created (local-only).", d.Name), nil
 		}
 		num, err := strconv.Atoi(a[3])
 		if err != nil {
 			return "", fmt.Errorf("project number must be an integer")
+		}
+		if num <= 0 {
+			if strings.EqualFold(a[2], "local") || a[2] == "-" {
+				d, err := s.CreateLocalDelegator(a[1], actor)
+				if err != nil {
+					return "", err
+				}
+				return fmt.Sprintf("✅ Delegator %q created (local-only).", d.Name), nil
+			}
+			return "", fmt.Errorf("github project number must be positive, or use: delegator create <name>")
 		}
 		d, err := s.CreateDelegator(a[1], a[2], num, actor)
 		if err != nil {
@@ -60,12 +77,16 @@ func handleDelegator(s *store.Store, actor string, a []string) (string, error) {
 			return "", err
 		}
 		if len(ds) == 0 {
-			return "No delegators yet. Create one: delegator create <name> <owner> <project#>", nil
+			return "No delegators yet. Create one: delegator create <name>", nil
 		}
 		var b strings.Builder
 		b.WriteString("Delegators:\n")
 		for _, d := range ds {
-			fmt.Fprintf(&b, "  %s → %s/#%d\n", d.Name, d.GithubOwner, d.GithubProjectNumber)
+			if d.HasGitHub() {
+				fmt.Fprintf(&b, "  %s → %s/#%d\n", d.Name, d.GithubOwner, d.GithubProjectNumber)
+			} else {
+				fmt.Fprintf(&b, "  %s → local-only\n", d.Name)
+			}
 		}
 		return b.String(), nil
 	case "delete":
@@ -211,15 +232,28 @@ func handleStaff(s *store.Store, actor string, a []string) (string, error) {
 	}
 	switch sub {
 	case "add":
-		// staff add <delegator> <telegram> <github> <role> <limit>
-		if len(a) != 6 {
+		// GitHub-backed: staff add <delegator> <telegram> <github> <role> <limit>
+		// Local-only:    staff add <delegator> <telegram> <role> <limit>
+		var tgUser, ghUser, role, limitText string
+		switch {
+		case len(a) == 6:
+			tgUser, ghUser, role, limitText = a[2], a[3], a[4], a[5]
+		case len(a) == 5 && !del.HasGitHub():
+			tgUser, role, limitText = a[2], a[3], a[4]
+			ghUser = strings.TrimPrefix(tgUser, "@")
+		case len(a) == 5:
 			return "", fmt.Errorf("usage: staff add <delegator> <@telegram> <github> <role> <limit>")
+		default:
+			if del.HasGitHub() {
+				return "", fmt.Errorf("usage: staff add <delegator> <@telegram> <github> <role> <limit>")
+			}
+			return "", fmt.Errorf("usage: staff add <delegator> <@telegram> <role> <limit>")
 		}
-		limit, err := strconv.Atoi(a[5])
+		limit, err := strconv.Atoi(limitText)
 		if err != nil || limit < 0 {
 			return "", fmt.Errorf("limit must be a non-negative integer")
 		}
-		st, err := s.AddStaff(del.ID, a[2], a[3], a[4], limit, actor)
+		st, err := s.AddStaff(del.ID, tgUser, ghUser, role, limit, actor)
 		if err != nil {
 			return "", err
 		}
@@ -322,11 +356,11 @@ func handleTask(s *store.Store, actor string, a []string) (string, error) {
 func helpText() string {
 	return strings.Join([]string{
 		"zc-team commands:",
-		"  delegator create <name> <github_owner> <project#>",
+		"  delegator create <name> [<github_owner> <project#>]",
 		"  delegator list | delegator delete <name>",
 		"  standup create <name> <delegator> <@group> <HH:MM> <timezone>",
 		"  standup list [delegator] | standup delete <name>",
-		"  staff add <delegator> <@telegram> <github> <role> <limit>",
+		"  staff add <delegator> <@telegram> [<github>] <role> <limit>",
 		"  staff remove|role|limit|list <delegator> …",
 		"  add task | new task | finish task   (conversational)",
 		"  task add <delegator> <priority> <title…> | task list <delegator>",

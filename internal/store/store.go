@@ -35,10 +35,15 @@ type Delegator struct {
 	GithubOwner         string
 	GithubProjectNumber int
 	GithubProjectID     string
+	LocalOnly           bool
 	CreatedBy           string
 	CreatedAt           time.Time
 	UpdatedAt           time.Time
 	IsActive            bool
+}
+
+func (d *Delegator) HasGitHub() bool {
+	return d != nil && !d.LocalOnly && strings.TrimSpace(d.GithubOwner) != "" && d.GithubProjectNumber > 0
 }
 
 type Standup struct {
@@ -102,14 +107,22 @@ func (s *Store) Audit(actor, action, entityType, entityID string, details any) {
 // --- delegators --------------------------------------------------------------
 
 func (s *Store) CreateDelegator(name, owner string, projectNumber int, createdBy string) (*Delegator, error) {
+	return s.createDelegator(name, owner, projectNumber, false, createdBy)
+}
+
+func (s *Store) CreateLocalDelegator(name, createdBy string) (*Delegator, error) {
+	return s.createDelegator(name, "", 0, true, createdBy)
+}
+
+func (s *Store) createDelegator(name, owner string, projectNumber int, localOnly bool, createdBy string) (*Delegator, error) {
 	d := &Delegator{
 		ID: NewID(), Name: name, GithubOwner: owner, GithubProjectNumber: projectNumber,
-		CreatedBy: createdBy, CreatedAt: now(), UpdatedAt: now(), IsActive: true,
+		LocalOnly: localOnly, CreatedBy: createdBy, CreatedAt: now(), UpdatedAt: now(), IsActive: true,
 	}
 	_, err := s.db.Exec(
-		`INSERT INTO delegator_agents(id,name,github_owner,github_project_number,created_by,created_at,updated_at,is_active)
-		 VALUES(?,?,?,?,?,?,?,1)`,
-		d.ID, d.Name, d.GithubOwner, d.GithubProjectNumber, d.CreatedBy, d.CreatedAt, d.UpdatedAt,
+		`INSERT INTO delegator_agents(id,name,github_owner,github_project_number,created_by,created_at,updated_at,is_active,local_only)
+		 VALUES(?,?,?,?,?,?,?,1,?)`,
+		d.ID, d.Name, d.GithubOwner, d.GithubProjectNumber, d.CreatedBy, d.CreatedAt, d.UpdatedAt, d.LocalOnly,
 	)
 	if err != nil {
 		if strings.Contains(err.Error(), "UNIQUE") {
@@ -117,21 +130,28 @@ func (s *Store) CreateDelegator(name, owner string, projectNumber int, createdBy
 		}
 		return nil, err
 	}
-	s.Audit(createdBy, "delegator_created", "delegator", d.ID, map[string]any{"name": name, "owner": owner, "project": projectNumber})
+	details := map[string]any{"name": name}
+	if localOnly {
+		details["local_only"] = true
+	} else {
+		details["owner"] = owner
+		details["project"] = projectNumber
+	}
+	s.Audit(createdBy, "delegator_created", "delegator", d.ID, details)
 	return d, nil
 }
 
 func scanDelegator(row interface{ Scan(...any) error }) (*Delegator, error) {
 	var d Delegator
 	var pid sql.NullString
-	if err := row.Scan(&d.ID, &d.Name, &d.GithubOwner, &d.GithubProjectNumber, &pid, &d.CreatedBy, &d.CreatedAt, &d.UpdatedAt, &d.IsActive); err != nil {
+	if err := row.Scan(&d.ID, &d.Name, &d.GithubOwner, &d.GithubProjectNumber, &pid, &d.LocalOnly, &d.CreatedBy, &d.CreatedAt, &d.UpdatedAt, &d.IsActive); err != nil {
 		return nil, err
 	}
 	d.GithubProjectID = pid.String
 	return &d, nil
 }
 
-const delegatorCols = `id,name,github_owner,github_project_number,github_project_id,created_by,created_at,updated_at,is_active`
+const delegatorCols = `id,name,github_owner,github_project_number,github_project_id,local_only,created_by,created_at,updated_at,is_active`
 
 func (s *Store) DelegatorByName(name string) (*Delegator, error) {
 	row := s.db.QueryRow(`SELECT `+delegatorCols+` FROM delegator_agents WHERE name=? AND is_active=1`, name)

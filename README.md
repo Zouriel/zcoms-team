@@ -15,9 +15,16 @@ Requires the **bridge** and **errands** components.
 ## Install
 ```sh
 zc install team        # pulls in bridge + errands, downloads the prebuilt binary
+zc team delegator create hems-dev
+zc team staff add hems-dev @ali staff 2
+zc team standup create hems-morning hems-dev @hems_team 09:00 Indian/Maldives
+```
+
+GitHub Projects sync is optional. To bind a delegator to a GitHub Project, use:
+
+```sh
 zc team delegator create hems-dev MoHE-HEMS 1
 zc team staff add hems-dev @ali ali-dev staff 2
-zc team standup create hems-morning hems-dev @hems_team 09:00 Indian/Maldives
 ```
 
 Status: Phase 1 (SQLite + delegator/standup/staff CRUD + audit). Task pool,

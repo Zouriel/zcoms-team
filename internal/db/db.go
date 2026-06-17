@@ -132,6 +132,8 @@ var migrations = []string{
 	`CREATE INDEX idx_task_pool_delegator_status ON task_pool(delegator_id, status, priority);
 	 CREATE INDEX idx_staff_delegator ON staff_members(delegator_id, telegram_username);
 	 CREATE INDEX idx_standup_runs_agent_date ON standup_runs(standup_agent_id, run_date);`,
+	`ALTER TABLE delegator_agents ADD COLUMN local_only BOOLEAN NOT NULL DEFAULT 0;
+	 UPDATE delegator_agents SET local_only=1 WHERE github_project_number=0 AND (github_owner='' OR lower(github_owner)='local');`,
 }
 
 func migrate(d *sql.DB) error {

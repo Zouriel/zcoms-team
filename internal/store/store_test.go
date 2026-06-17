@@ -43,6 +43,14 @@ func TestDelegatorCRUD(t *testing.T) {
 	if _, err := s.DelegatorByName("hems-dev"); err != ErrNotFound {
 		t.Fatalf("want ErrNotFound after delete, got %v", err)
 	}
+
+	local, err := s.CreateLocalDelegator("local-dev", "@admin")
+	if err != nil {
+		t.Fatalf("create local: %v", err)
+	}
+	if !local.LocalOnly || local.HasGitHub() {
+		t.Fatalf("bad local delegator: %+v", local)
+	}
 }
 
 func TestStandupAndStaff(t *testing.T) {

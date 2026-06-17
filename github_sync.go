@@ -13,6 +13,9 @@ const githubEnabled = false
 // resolveProject resolves (and caches) a delegator's Projects v2 board, recording
 // the resolved node id back onto the delegator the first time.
 func (e *Engine) resolveProject(del *store.Delegator) *github.Project {
+	if !del.HasGitHub() {
+		return nil
+	}
 	e.ghMu.Lock()
 	defer e.ghMu.Unlock()
 	if p, ok := e.ghCache[del.ID]; ok {
