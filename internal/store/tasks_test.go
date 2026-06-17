@@ -51,6 +51,16 @@ func TestTaskPool(t *testing.T) {
 	if len(act) != 1 || act[0].Title != "High one" {
 		t.Fatalf("active wrong: %v", titles(act))
 	}
+	if _, err := s.UnassignTask(act[0].ID, staff.ID, "@ali"); err != nil {
+		t.Fatalf("unassign: %v", err)
+	}
+	if n, _ := s.CountActiveFor(staff.ID); n != 0 {
+		t.Fatalf("want 0 active after unassign, got %d", n)
+	}
+	avail, _ = s.AvailableTasks(d.ID, 3)
+	if len(avail) != 2 || avail[0].Title != "High one" {
+		t.Fatalf("unassigned task not returned to pool: %v", titles(avail))
+	}
 	// Resolve actor → staff.
 	if rs, _ := s.StaffByTelegram("@ali"); len(rs) != 1 || rs[0].ID != staff.ID {
 		t.Fatalf("StaffByTelegram wrong")

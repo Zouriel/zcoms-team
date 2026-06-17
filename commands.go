@@ -362,7 +362,7 @@ func helpText() string {
 		"  standup list [delegator] | standup delete <name>",
 		"  staff add <delegator> <@telegram> [<github>] <role> <limit>",
 		"  staff remove|role|limit|list <delegator> …",
-		"  add task | new task | finish task   (conversational)",
+		"  add task | new task | finish task | give up   (conversational)",
 		"  task add <delegator> <priority> <title…> | task list <delegator>",
 		"  standup report <today|yesterday|<agent>> [date] [agent]",
 		"  audit recent [n]",

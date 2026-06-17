@@ -26,7 +26,7 @@ type Engine struct {
 }
 
 type conv struct {
-	kind        string // add_tasks | add_priority | new_pick | finish_pick
+	kind        string // add_tasks | add_priority | new_pick | finish_pick | give_up_pick
 	delegatorID string
 	staffID     string
 	titles      []string
@@ -74,6 +74,8 @@ func (e *Engine) Handle(actor, text string) (reply string, cont bool, err error)
 		return e.startNewTask(actor)
 	case lower == "finish task":
 		return e.startFinishTask(actor)
+	case lower == "give up":
+		return e.startGiveUp(actor)
 	default:
 		r, err := handleCommand(e.s, actor, text) // stateless CRUD + single-shot task forms
 		return r, false, err
@@ -149,6 +151,9 @@ func (e *Engine) step(actor string, c *conv, text string) (string, bool, error) 
 
 	case "finish_pick":
 		return e.pickFinish(actor, c, text)
+
+	case "give_up_pick":
+		return e.pickGiveUp(actor, c, text)
 	}
 	e.clear(actor)
 	return "", false, fmt.Errorf("lost track of that conversation — please try again")
@@ -236,9 +241,39 @@ func (e *Engine) pickFinish(actor string, c *conv, text string) (string, bool, e
 	return reply, false, nil
 }
 
+// --- give up task (return to pool) -------------------------------------------
+
+func (e *Engine) startGiveUp(actor string) (string, bool, error) {
+	st, _, err := e.resolveStaff(actor)
+	if err != nil {
+		return "", false, err
+	}
+	active, _ := e.s.ActiveTasksFor(st.ID)
+	if len(active) == 0 {
+		return "You have no active tasks to give up.", false, nil
+	}
+	e.set(actor, &conv{kind: "give_up_pick", staffID: st.ID, delegatorID: st.DelegatorID, options: active})
+	return "Your active tasks — reply with a number to give up:\n" + numberedTasks(active), true, nil
+}
+
+func (e *Engine) pickGiveUp(actor string, c *conv, text string) (string, bool, error) {
+	n, err := strconv.Atoi(strings.TrimSpace(text))
+	if err != nil || n < 1 || n > len(c.options) {
+		return fmt.Sprintf("Pick a number 1–%d, or 'cancel'.", len(c.options)), true, nil
+	}
+	task := c.options[n-1]
+	unassigned, err := e.s.UnassignTask(task.ID, c.staffID, actor)
+	if err != nil {
+		e.clear(actor)
+		return "", false, err
+	}
+	e.clear(actor)
+	return fmt.Sprintf("↩️ Returned to the pool: %s", unassigned.Title), false, nil
+}
+
 // --- helpers -----------------------------------------------------------------
 
-// resolveStaff finds the single team membership for an actor (for claim/finish).
+// resolveStaff finds the single team membership for an actor (for claim/finish/give up).
 func (e *Engine) resolveStaff(actor string) (*store.Staff, *store.Delegator, error) {
 	sts, _ := e.s.StaffByTelegram(actor)
 	switch len(sts) {

@@ -191,6 +191,23 @@ func (s *Store) FinishTask(taskID, actor string) (*Task, error) {
 	return s.TaskByID(taskID)
 }
 
+// UnassignTask returns an active task to the unassigned pool.
+func (s *Store) UnassignTask(taskID, staffID, actor string) (*Task, error) {
+	res, err := s.db.Exec(
+		`UPDATE task_pool SET status=?, assigned_staff_id=NULL, assigned_at=NULL, updated_at=?
+		 WHERE id=? AND assigned_staff_id=? AND status IN ('assigned','blocked','review')`,
+		StatusUnassigned, now(), taskID, staffID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	if n, _ := res.RowsAffected(); n == 0 {
+		return nil, fmt.Errorf("that task is no longer assigned to you")
+	}
+	s.Audit(actor, "task_unassigned", "task", taskID, map[string]any{"staff": staffID})
+	return s.TaskByID(taskID)
+}
+
 // SetTaskStatus updates a task's status (used by standups: blocked/review/etc.).
 func (s *Store) SetTaskStatus(taskID, status, actor string) error {
 	_, err := s.db.Exec(`UPDATE task_pool SET status=?, updated_at=? WHERE id=?`, status, now(), taskID)
