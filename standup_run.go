@@ -55,8 +55,9 @@ type Coordinator struct {
 	e   *Engine
 	ipc *ipc.Client
 
-	mu   sync.Mutex
-	runs map[string]*runState // runID -> in-flight run
+	mu          sync.Mutex
+	runs        map[string]*runState // runID -> in-flight run
+	sentReports map[string]bool      // period:delegator:date -> sent (weekly/monthly dedup)
 }
 
 type runState struct {
@@ -67,7 +68,7 @@ type runState struct {
 }
 
 func NewCoordinator(e *Engine, c *ipc.Client) *Coordinator {
-	return &Coordinator{e: e, ipc: c, runs: map[string]*runState{}}
+	return &Coordinator{e: e, ipc: c, runs: map[string]*runState{}, sentReports: map[string]bool{}}
 }
 
 // Run executes one standup: create the run, then dispatch an interview per staff
@@ -186,7 +187,7 @@ func (co *Coordinator) OnResult(res InterviewResult) {
 }
 
 func (co *Coordinator) syncGithub(itemID, staffID, status string) {
-	if itemID == "" {
+	if !githubEnabled || itemID == "" {
 		return
 	}
 	st, _ := co.e.s.StaffByID(staffID)
@@ -225,6 +226,11 @@ func (co *Coordinator) finalize(runID string, viaWatchdog bool) {
 	report := generateReport(updates, names)
 	_ = co.e.s.CompleteStandupRun(runID, report)
 	co.postReport(rs.standup, report)
+
+	// Daily PDF report → the delegator's creator.
+	if del, err := co.e.s.DelegatorByID(rs.standup.DelegatorID); err == nil {
+		co.sendDailyReport(del, report)
+	}
 }
 
 // postReport sends the report to the standup's Telegram group via the daemon IPC.
@@ -260,6 +266,10 @@ func (co *Coordinator) RunScheduler() {
 			if n.Hour() == hh && n.Minute() == mm {
 				go co.Run(su)
 			}
+		}
+		// Weekly (Saturday) + monthly (1st) reports, at ~reportHour:00 local.
+		if now.Hour() == reportHour && now.Minute() == 0 {
+			co.runPeriodicReports(now)
 		}
 	}
 }

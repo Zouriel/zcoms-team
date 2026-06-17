@@ -5,6 +5,11 @@ import (
 	"github.com/Zouriel/zcoms-team/internal/store"
 )
 
+// githubEnabled gates the GitHub Projects v2 sync. Disabled for now — zc-team
+// relies purely on its SQLite database for assignment + standups. Flip to true
+// (and the github package is ready) to re-enable Projects sync.
+const githubEnabled = false
+
 // resolveProject resolves (and caches) a delegator's Projects v2 board, recording
 // the resolved node id back onto the delegator the first time.
 func (e *Engine) resolveProject(del *store.Delegator) *github.Project {
@@ -28,7 +33,7 @@ func (e *Engine) resolveProject(del *store.Delegator) *github.Project {
 // Best-effort: returns a short note (or "" / a soft warning) — never blocks the
 // local assignment.
 func (e *Engine) onAssign(task *store.Task, staffID string) string {
-	if !github.Available() {
+	if !githubEnabled || !github.Available() {
 		return ""
 	}
 	del, err := e.s.DelegatorByID(task.DelegatorID)
@@ -62,7 +67,7 @@ func (e *Engine) onAssign(task *store.Task, staffID string) string {
 
 // onFinish sets the task's GitHub item to Done.
 func (e *Engine) onFinish(task *store.Task) string {
-	if !github.Available() || task.GithubItemID == "" {
+	if !githubEnabled || !github.Available() || task.GithubItemID == "" {
 		return ""
 	}
 	del, err := e.s.DelegatorByID(task.DelegatorID)

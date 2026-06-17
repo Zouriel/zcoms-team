@@ -4,6 +4,7 @@ go 1.25.6
 
 require (
 	github.com/Zouriel/zcoms-sdk v0.1.2
+	github.com/go-pdf/fpdf v0.9.0
 	modernc.org/sqlite v1.34.4
 )
 
