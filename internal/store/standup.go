@@ -127,3 +127,37 @@ func nullStr(s string) any {
 	}
 	return s
 }
+
+// --- audit history -----------------------------------------------------------
+
+type AuditEntry struct {
+	Actor      string
+	Action     string
+	EntityType string
+	EntityID   string
+	Details    string
+	CreatedAt  time.Time
+}
+
+// AuditRecent returns the most recent audit entries (newest first).
+func (s *Store) AuditRecent(limit int) ([]AuditEntry, error) {
+	if limit <= 0 {
+		limit = 20
+	}
+	rows, err := s.db.Query(
+		`SELECT actor,action,entity_type,entity_id,COALESCE(details_json,''),created_at
+		 FROM audit_logs ORDER BY created_at DESC LIMIT ?`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []AuditEntry
+	for rows.Next() {
+		var a AuditEntry
+		if err := rows.Scan(&a.Actor, &a.Action, &a.EntityType, &a.EntityID, &a.Details, &a.CreatedAt); err != nil {
+			return nil, err
+		}
+		out = append(out, a)
+	}
+	return out, rows.Err()
+}

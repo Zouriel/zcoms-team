@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/Zouriel/zcoms-team/internal/store"
 )
@@ -27,6 +28,8 @@ func handleCommand(s *store.Store, actor, text string) (string, error) {
 		return handleStaff(s, actor, f[1:])
 	case "task":
 		return handleTask(s, actor, f[1:])
+	case "audit":
+		return handleAudit(s, f[1:])
 	default:
 		return "", fmt.Errorf("unknown command %q (try: help)", f[0])
 	}
@@ -127,9 +130,74 @@ func handleStandup(s *store.Store, actor string, a []string) (string, error) {
 			return "", err
 		}
 		return fmt.Sprintf("🗑️ Standup %q deleted.", a[1]), nil
+	case "report":
+		return handleStandupReport(s, a[1:])
 	default:
-		return "", fmt.Errorf("usage: standup <create|list|delete>")
+		return "", fmt.Errorf("usage: standup <create|list|delete|report>")
 	}
+}
+
+// handleStandupReport serves: standup report today|yesterday <agent> | standup
+// report <agent> [YYYY-MM-DD].
+func handleStandupReport(s *store.Store, a []string) (string, error) {
+	if len(a) < 1 {
+		return "", fmt.Errorf("usage: standup report <today|yesterday|<agent>> …")
+	}
+	var agentName, date string
+	switch a[0] {
+	case "today":
+		if len(a) < 2 {
+			return "", fmt.Errorf("usage: standup report today <agent>")
+		}
+		agentName, date = a[1], time.Now().Format("2006-01-02")
+	case "yesterday":
+		if len(a) < 2 {
+			return "", fmt.Errorf("usage: standup report yesterday <agent>")
+		}
+		agentName, date = a[1], time.Now().AddDate(0, 0, -1).Format("2006-01-02")
+	default:
+		agentName = a[0]
+		if len(a) >= 2 {
+			date = a[1]
+		} else {
+			date = time.Now().Format("2006-01-02")
+		}
+	}
+	su, err := s.StandupByName(agentName)
+	if err != nil {
+		return "", fmt.Errorf("no standup named %q", agentName)
+	}
+	run, err := s.RunOn(su.ID, date)
+	if err != nil {
+		return fmt.Sprintf("No standup run for %s on %s.", agentName, date), nil
+	}
+	if run.GroupReport != "" {
+		return fmt.Sprintf("(%s, %s)\n\n%s", agentName, date, run.GroupReport), nil
+	}
+	return fmt.Sprintf("Standup %s on %s: %s (no report yet).", agentName, date, run.Status), nil
+}
+
+func handleAudit(s *store.Store, a []string) (string, error) {
+	limit := 20
+	if len(a) >= 2 && a[0] == "recent" {
+		if n, err := strconv.Atoi(a[1]); err == nil {
+			limit = n
+		}
+	}
+	entries, err := s.AuditRecent(limit)
+	if err != nil {
+		return "", err
+	}
+	if len(entries) == 0 {
+		return "No audit entries.", nil
+	}
+	var b strings.Builder
+	b.WriteString("Recent activity:\n")
+	for _, e := range entries {
+		fmt.Fprintf(&b, "  %s  %-18s %s %s  by %s\n",
+			e.CreatedAt.Format("01-02 15:04"), e.Action, e.EntityType, e.EntityID, e.Actor)
+	}
+	return b.String(), nil
 }
 
 func handleStaff(s *store.Store, actor string, a []string) (string, error) {
@@ -260,5 +328,9 @@ func helpText() string {
 		"  standup list [delegator] | standup delete <name>",
 		"  staff add <delegator> <@telegram> <github> <role> <limit>",
 		"  staff remove|role|limit|list <delegator> …",
+		"  add task | new task | finish task   (conversational)",
+		"  task add <delegator> <priority> <title…> | task list <delegator>",
+		"  standup report <today|yesterday|<agent>> [date] [agent]",
+		"  audit recent [n]",
 	}, "\n")
 }
