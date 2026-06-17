@@ -25,6 +25,8 @@ func handleCommand(s *store.Store, actor, text string) (string, error) {
 		return handleStandup(s, actor, f[1:])
 	case "staff":
 		return handleStaff(s, actor, f[1:])
+	case "task":
+		return handleTask(s, actor, f[1:])
 	default:
 		return "", fmt.Errorf("unknown command %q (try: help)", f[0])
 	}
@@ -198,6 +200,54 @@ func handleStaff(s *store.Store, actor string, a []string) (string, error) {
 		return b.String(), nil
 	default:
 		return "", fmt.Errorf("usage: staff <add|remove|role|limit|list> <delegator> …")
+	}
+}
+
+// handleTask is the single-shot (CLI / owner) task interface. The conversational
+// add/new/finish flows are handled by the Engine.
+func handleTask(s *store.Store, actor string, a []string) (string, error) {
+	if len(a) < 2 {
+		return "", fmt.Errorf("usage: task <add|list> <delegator> …")
+	}
+	del, err := s.DelegatorByName(a[1])
+	if err != nil {
+		return "", fmt.Errorf("no delegator named %q", a[1])
+	}
+	switch a[0] {
+	case "add":
+		// task add <delegator> <priority> <title…>
+		if len(a) < 4 {
+			return "", fmt.Errorf("usage: task add <delegator> <priority> <title…>")
+		}
+		pri, ok := store.NormalizePriority(a[2])
+		if !ok {
+			return "", fmt.Errorf("priority must be critical|high|medium|low (or 1-4)")
+		}
+		title := strings.Join(a[3:], " ")
+		task, err := s.AddTask(del.ID, title, pri, actor)
+		if err != nil {
+			return "", err
+		}
+		if task == nil {
+			return "(duplicate — skipped)", nil
+		}
+		return fmt.Sprintf("✅ Added %q at %s priority.", task.Title, pri), nil
+	case "list":
+		avail, err := s.AvailableTasks(del.ID, 50)
+		if err != nil {
+			return "", err
+		}
+		if len(avail) == 0 {
+			return fmt.Sprintf("No unassigned tasks in %s.", del.Name), nil
+		}
+		var b strings.Builder
+		fmt.Fprintf(&b, "Unassigned tasks in %s:\n", del.Name)
+		for _, t := range avail {
+			fmt.Fprintf(&b, "  [%s] %s\n", t.Priority, t.Title)
+		}
+		return b.String(), nil
+	default:
+		return "", fmt.Errorf("usage: task <add|list> <delegator> …")
 	}
 }
 

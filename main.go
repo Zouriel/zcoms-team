@@ -32,9 +32,10 @@ type cmdRequest struct {
 }
 
 type cmdResponse struct {
-	OK    bool   `json:"ok"`
-	Reply string `json:"reply,omitempty"`
-	Error string `json:"error,omitempty"`
+	OK       bool   `json:"ok"`
+	Reply    string `json:"reply,omitempty"`
+	Continue bool   `json:"continue,omitempty"` // bridge keeps routing this actor here
+	Error    string `json:"error,omitempty"`
 }
 
 func main() {
@@ -53,10 +54,14 @@ func main() {
 	log.Println("[team] db ready:", path)
 
 	s := store.New(d)
-	serveCommands(s)
+	mainUser := ""
+	if set, _, err := agent.LoadOrSeedSettings(); err == nil {
+		mainUser = set.MainUser
+	}
+	serveCommands(NewEngine(s, mainUser))
 }
 
-func serveCommands(s *store.Store) {
+func serveCommands(e *Engine) {
 	path := teamSocketPath()
 	_ = os.Remove(path)
 	l, err := net.Listen("unix", path)
@@ -90,12 +95,12 @@ func serveCommands(s *store.Store) {
 			if actor == "" {
 				actor = "@owner"
 			}
-			reply, err := handleCommand(s, actor, req.Text)
+			reply, cont, err := e.Handle(actor, req.Text)
 			if err != nil {
 				writeResp(c, cmdResponse{Error: err.Error()})
 				return
 			}
-			writeResp(c, cmdResponse{OK: true, Reply: reply})
+			writeResp(c, cmdResponse{OK: true, Reply: reply, Continue: cont})
 		}(conn)
 	}
 }
