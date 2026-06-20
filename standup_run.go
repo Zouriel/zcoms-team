@@ -7,6 +7,7 @@ import (
 	"log"
 	"net"
 	"path/filepath"
+	"strconv"
 	"sync"
 	"time"
 
@@ -121,7 +122,7 @@ func (co *Coordinator) dispatchInterview(runID string, st *store.Staff, tasks []
 	spec := InterviewSpec{
 		RunID:    runID,
 		StaffID:  st.ID,
-		Target:   st.TelegramUsername,
+		Target:   standupTarget(st),
 		Greeting: "Good morning. A few minutes for today's standup? Let's review your current tasks.",
 		Closing:  "Thank you — I've recorded your updates.",
 		Callback: "team.sock",
@@ -152,6 +153,13 @@ func (co *Coordinator) dispatchInterview(runID string, st *store.Staff, tasks []
 	_, _ = bufio.NewReader(conn).ReadBytes('\n') // ack
 }
 
+func standupTarget(st *store.Staff) string {
+	if st.TelegramUserID > 0 {
+		return strconv.FormatInt(st.TelegramUserID, 10)
+	}
+	return st.TelegramUsername
+}
+
 // OnResult is invoked from the team.sock handler when errands posts a completed
 // interview. It stores updates, syncs GitHub + local task status, and finalizes
 // the run when everyone has reported.
@@ -169,9 +177,11 @@ func (co *Coordinator) OnResult(res InterviewResult) {
 			TaskTitle: a.Title, StaffResponse: a.Response, DetectedStatus: status, Blocker: blocker,
 		})
 		if status != "" && a.TaskID != "" {
-			// Move blocked/review locally + on GitHub (done keeps the task active
-			// unless the staff explicitly finished it; standups don't auto-close).
-			if status == store.StatusBlocked || status == store.StatusReview {
+			// Keep the local task pool aligned with the standup result. A done
+			// standup answer should free the assignee's slot just like finish task.
+			if status == store.StatusDone {
+				_, _ = co.e.s.FinishTask(a.TaskID, "system")
+			} else if status == store.StatusAssigned || status == store.StatusBlocked || status == store.StatusReview {
 				_ = co.e.s.SetTaskStatus(a.TaskID, status, "system")
 			}
 			co.syncGithub(a.GithubItemID, res.StaffID, status)

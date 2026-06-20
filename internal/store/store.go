@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -63,6 +64,7 @@ type Staff struct {
 	ID               string
 	DelegatorID      string
 	TelegramUsername string
+	TelegramUserID   int64
 	GithubUsername   string
 	Role             string
 	MaxActiveTasks   int
@@ -279,11 +281,22 @@ func (s *Store) DeleteStandup(name, actor string) error {
 // --- staff -------------------------------------------------------------------
 
 func normUser(u string) string {
-	u = strings.TrimSpace(u)
+	u = strings.ToLower(strings.TrimSpace(u))
+	if strings.HasPrefix(u, "user:") {
+		return u
+	}
 	if !strings.HasPrefix(u, "@") {
 		u = "@" + u
 	}
 	return u
+}
+
+func telegramActorID(actor string) (int64, bool) {
+	if !strings.HasPrefix(actor, "user:") {
+		return 0, false
+	}
+	id, err := strconv.ParseInt(strings.TrimPrefix(actor, "user:"), 10, 64)
+	return id, err == nil && id > 0
 }
 
 func (s *Store) AddStaff(delegatorID, tgUser, ghUser, role string, limit int, actor string) (*Staff, error) {
@@ -319,18 +332,27 @@ func (s *Store) AddStaff(delegatorID, tgUser, ghUser, role string, limit int, ac
 	return st, nil
 }
 
-const staffCols = `id,delegator_id,telegram_username,github_username,role,max_active_tasks,active,created_at,updated_at`
+const staffCols = `id,delegator_id,telegram_username,COALESCE(telegram_user_id,0),github_username,role,max_active_tasks,active,created_at,updated_at`
 
 func scanStaff(row interface{ Scan(...any) error }) (*Staff, error) {
 	var st Staff
-	if err := row.Scan(&st.ID, &st.DelegatorID, &st.TelegramUsername, &st.GithubUsername, &st.Role, &st.MaxActiveTasks, &st.Active, &st.CreatedAt, &st.UpdatedAt); err != nil {
+	if err := row.Scan(&st.ID, &st.DelegatorID, &st.TelegramUsername, &st.TelegramUserID, &st.GithubUsername, &st.Role, &st.MaxActiveTasks, &st.Active, &st.CreatedAt, &st.UpdatedAt); err != nil {
 		return nil, err
 	}
 	return &st, nil
 }
 
 func (s *Store) StaffByUser(delegatorID, tgUser string) (*Staff, error) {
-	row := s.db.QueryRow(`SELECT `+staffCols+` FROM staff_members WHERE delegator_id=? AND telegram_username=? AND active=1`, delegatorID, normUser(tgUser))
+	user := normUser(tgUser)
+	if id, ok := telegramActorID(user); ok {
+		row := s.db.QueryRow(`SELECT `+staffCols+` FROM staff_members WHERE delegator_id=? AND telegram_user_id=? AND active=1`, delegatorID, id)
+		st, err := scanStaff(row)
+		if errors.Is(err, sql.ErrNoRows) {
+			return nil, ErrNotFound
+		}
+		return st, err
+	}
+	row := s.db.QueryRow(`SELECT `+staffCols+` FROM staff_members WHERE delegator_id=? AND lower(telegram_username)=? AND active=1`, delegatorID, user)
 	st, err := scanStaff(row)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil, ErrNotFound

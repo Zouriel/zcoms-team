@@ -38,7 +38,10 @@ func NewEngine(s *store.Store, mainUser string) *Engine {
 }
 
 func normUser(u string) string {
-	u = strings.TrimSpace(u)
+	u = strings.ToLower(strings.TrimSpace(u))
+	if strings.HasPrefix(u, "user:") {
+		return u
+	}
 	if u != "" && !strings.HasPrefix(u, "@") {
 		u = "@" + u
 	}
@@ -65,6 +68,9 @@ func (e *Engine) Handle(actor, text string) (reply string, cont bool, err error)
 	}
 	if c != nil {
 		return e.step(actor, c, text)
+	}
+	if _, ok := pickNumber(text); ok {
+		return "I don't have an active task selection for that number anymore. Send 'new task' to see the current list.", false, nil
 	}
 
 	switch {
@@ -179,8 +185,8 @@ func (e *Engine) startNewTask(actor string) (string, bool, error) {
 }
 
 func (e *Engine) pickNew(actor string, c *conv, text string) (string, bool, error) {
-	n, err := strconv.Atoi(strings.TrimSpace(text))
-	if err != nil || n < 1 || n > len(c.options) {
+	n, ok := pickNumber(text)
+	if !ok || n < 1 || n > len(c.options) {
 		return fmt.Sprintf("Pick a number 1–%d, or 'cancel'.", len(c.options)), true, nil
 	}
 	task := c.options[n-1]
@@ -213,8 +219,8 @@ func (e *Engine) startFinishTask(actor string) (string, bool, error) {
 }
 
 func (e *Engine) pickFinish(actor string, c *conv, text string) (string, bool, error) {
-	n, err := strconv.Atoi(strings.TrimSpace(text))
-	if err != nil || n < 1 || n > len(c.options) {
+	n, ok := pickNumber(text)
+	if !ok || n < 1 || n > len(c.options) {
 		return fmt.Sprintf("Pick a number 1–%d, or 'cancel'.", len(c.options)), true, nil
 	}
 	task := c.options[n-1]
@@ -257,8 +263,8 @@ func (e *Engine) startGiveUp(actor string) (string, bool, error) {
 }
 
 func (e *Engine) pickGiveUp(actor string, c *conv, text string) (string, bool, error) {
-	n, err := strconv.Atoi(strings.TrimSpace(text))
-	if err != nil || n < 1 || n > len(c.options) {
+	n, ok := pickNumber(text)
+	if !ok || n < 1 || n > len(c.options) {
 		return fmt.Sprintf("Pick a number 1–%d, or 'cancel'.", len(c.options)), true, nil
 	}
 	task := c.options[n-1]
@@ -269,6 +275,15 @@ func (e *Engine) pickGiveUp(actor string, c *conv, text string) (string, bool, e
 	}
 	e.clear(actor)
 	return fmt.Sprintf("↩️ Returned to the pool: %s", unassigned.Title), false, nil
+}
+
+func pickNumber(text string) (int, bool) {
+	first := strings.Fields(strings.TrimSpace(text))
+	if len(first) == 0 {
+		return 0, false
+	}
+	n, err := strconv.Atoi(first[0])
+	return n, err == nil
 }
 
 // --- helpers -----------------------------------------------------------------

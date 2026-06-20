@@ -223,7 +223,14 @@ func (s *Store) SetTaskGithubItem(taskID, itemID string) error {
 // StaffByTelegram returns all active staff records for a telegram username,
 // across delegators (a person can be staff in more than one project).
 func (s *Store) StaffByTelegram(tgUser string) ([]*Staff, error) {
-	rows, err := s.db.Query(`SELECT `+staffCols+` FROM staff_members WHERE telegram_username=? AND active=1`, normUser(tgUser))
+	user := normUser(tgUser)
+	var rows *sql.Rows
+	var err error
+	if id, ok := telegramActorID(user); ok {
+		rows, err = s.db.Query(`SELECT `+staffCols+` FROM staff_members WHERE telegram_user_id=? AND active=1`, id)
+	} else {
+		rows, err = s.db.Query(`SELECT `+staffCols+` FROM staff_members WHERE lower(telegram_username)=? AND active=1`, user)
+	}
 	if err != nil {
 		return nil, err
 	}

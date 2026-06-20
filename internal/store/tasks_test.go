@@ -62,8 +62,23 @@ func TestTaskPool(t *testing.T) {
 		t.Fatalf("unassigned task not returned to pool: %v", titles(avail))
 	}
 	// Resolve actor → staff.
-	if rs, _ := s.StaffByTelegram("@ali"); len(rs) != 1 || rs[0].ID != staff.ID {
+	if rs, _ := s.StaffByTelegram("@ALI"); len(rs) != 1 || rs[0].ID != staff.ID {
 		t.Fatalf("StaffByTelegram wrong")
+	}
+	if rs, _ := s.StaffByTelegram("Ali"); len(rs) != 1 || rs[0].ID != staff.ID {
+		t.Fatalf("StaffByTelegram without @ wrong")
+	}
+	if st, _ := s.StaffByUser(d.ID, "@ALI"); st.ID != staff.ID {
+		t.Fatalf("StaffByUser wrong")
+	}
+	if _, err := s.db.Exec(`UPDATE staff_members SET telegram_user_id=? WHERE id=?`, int64(1098392910), staff.ID); err != nil {
+		t.Fatalf("set telegram_user_id: %v", err)
+	}
+	if rs, _ := s.StaffByTelegram("user:1098392910"); len(rs) != 1 || rs[0].ID != staff.ID {
+		t.Fatalf("StaffByTelegram user id wrong")
+	}
+	if st, _ := s.StaffByUser(d.ID, "user:1098392910"); st.ID != staff.ID {
+		t.Fatalf("StaffByUser user id wrong")
 	}
 }
 
