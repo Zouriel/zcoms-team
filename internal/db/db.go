@@ -8,13 +8,13 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/Zouriel/zcoms-sdk/agent"
+	commsclient "github.com/Zouriel/zcoms/client"
 	_ "modernc.org/sqlite"
 )
 
 // DefaultPath returns ~/.config/zcoms/zc-team/team.db, creating the directory.
 func DefaultPath() (string, error) {
-	base, err := agent.DefaultAppDir()
+	base, err := commsclient.DefaultAppDir()
 	if err != nil {
 		return "", err
 	}

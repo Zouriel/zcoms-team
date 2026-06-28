@@ -1,41 +1,23 @@
 package main
 
 import (
-	"bufio"
-	"encoding/json"
 	"fmt"
 	"log"
-	"net"
-	"path/filepath"
 	"strconv"
 	"sync"
 	"time"
 
-	"github.com/Zouriel/zcoms-sdk/agent"
-	"github.com/Zouriel/zcoms-sdk/ipc"
+	agentclient "github.com/Zouriel/zcoms-agent/client"
+	"github.com/Zouriel/zcoms-agent/scheduler"
 	"github.com/Zouriel/zcoms-team/internal/store"
+	commsclient "github.com/Zouriel/zcoms/client"
 )
 
 // --- the team↔errands standup interview protocol ----------------------------
 
-// InterviewSpec is sent to the errands component to conduct one staff member's
-// standup interview; errands posts InterviewResult back to team.sock.
-type InterviewSpec struct {
-	RunID     string              `json:"run_id"`
-	StaffID   string              `json:"staff_id"`
-	Target    string              `json:"target"` // @telegram (or wa:NUMBER)
-	Greeting  string              `json:"greeting"`
-	Closing   string              `json:"closing"`
-	Callback  string              `json:"callback"` // socket file to post results to ("team.sock")
-	Questions []InterviewQuestion `json:"questions"`
-}
-
-type InterviewQuestion struct {
-	TaskID       string `json:"task_id"`
-	GithubItemID string `json:"github_item_id"`
-	Title        string `json:"title"`
-	Prompt       string `json:"prompt"`
-}
+// The interview *request* types now live in agent/client (the team delegates
+// conducting the interview to the agent). The team keeps only the *result* types
+// the agent posts back to team.sock.
 
 type InterviewResult struct {
 	RunID   string            `json:"run_id"`
@@ -54,7 +36,7 @@ type InterviewAnswer struct {
 // component, collect results via callback, sync GitHub, generate + post reports.
 type Coordinator struct {
 	e   *Engine
-	ipc *ipc.Client
+	ipc *commsclient.Client
 
 	mu          sync.Mutex
 	runs        map[string]*runState // runID -> in-flight run
@@ -68,7 +50,7 @@ type runState struct {
 	got      int
 }
 
-func NewCoordinator(e *Engine, c *ipc.Client) *Coordinator {
+func NewCoordinator(e *Engine, c *commsclient.Client) *Coordinator {
 	return &Coordinator{e: e, ipc: c, runs: map[string]*runState{}, sentReports: map[string]bool{}}
 }
 
@@ -119,43 +101,58 @@ func (co *Coordinator) Run(su *store.Standup) {
 }
 
 func (co *Coordinator) dispatchInterview(runID string, st *store.Staff, tasks []*store.Task) {
-	spec := InterviewSpec{
+	spec := agentclient.InterviewSpec{
 		RunID:    runID,
 		StaffID:  st.ID,
-		Target:   standupTarget(st),
+		Target:   co.resolveTarget(st),
 		Greeting: "Good morning. A few minutes for today's standup? Let's review your current tasks.",
 		Closing:  "Thank you — I've recorded your updates.",
 		Callback: "team.sock",
 	}
 	for _, t := range tasks {
-		spec.Questions = append(spec.Questions, InterviewQuestion{
+		spec.Questions = append(spec.Questions, agentclient.InterviewQuestion{
 			TaskID: t.ID, GithubItemID: t.GithubItemID, Title: t.Title,
 			Prompt: "Task: " + t.Title + "\nHow is this task progressing?",
 		})
 	}
-	// Dispatch to the errands component (errands.sock) — it conducts the
-	// conversation and posts the result back to team.sock.
-	dir, err := agent.DefaultAppDir()
+	// Delegate to the agent tier via agent/client — the agent conducts the
+	// interview with its standup_interviewer persona and posts the result back to
+	// team.sock. No prompt text or conversation logic lives in the team module.
+	ac, err := agentclient.New()
 	if err != nil {
 		return
 	}
-	conn, err := net.DialTimeout("unix", filepath.Join(dir, "errands.sock"), 2*time.Second)
-	if err != nil {
-		log.Printf("[standup] errands component unreachable; can't interview %s", st.TelegramUsername)
-		return
+	if err := ac.Interview(spec); err != nil {
+		log.Printf("[standup] agent unreachable; can't interview %s: %v", st.TelegramUsername, err)
 	}
-	defer conn.Close()
-	req, _ := json.Marshal(struct {
-		Interview *InterviewSpec `json:"interview"`
-	}{&spec})
-	_, _ = conn.Write(append(req, '\n'))
-	_ = conn.SetReadDeadline(time.Now().Add(10 * time.Second))
-	_, _ = bufio.NewReader(conn).ReadBytes('\n') // ack
 }
 
+// standupTarget addresses a staff member by their stored Telegram handle
+// (numeric id preferred over @username).
 func standupTarget(st *store.Staff) string {
 	if st.TelegramUserID > 0 {
 		return strconv.FormatInt(st.TelegramUserID, 10)
+	}
+	return st.TelegramUsername
+}
+
+// resolveTarget addresses a staff member, preferring the stored Telegram handle
+// and falling back to the comms contacts directory (resolve by username → a
+// platform handle) so recipients aren't hardcoded.
+func (co *Coordinator) resolveTarget(st *store.Staff) string {
+	if t := standupTarget(st); t != "" {
+		return t
+	}
+	if co.ipc != nil && st.GithubUsername != "" {
+		if cs, err := co.ipc.ResolveContact(st.GithubUsername); err == nil {
+			for _, c := range cs {
+				for _, h := range c.Handles {
+					if h.Platform == "telegram" {
+						return h.Handle
+					}
+				}
+			}
+		}
 	}
 	return st.TelegramUsername
 }
@@ -253,33 +250,37 @@ func (co *Coordinator) postReport(su *store.Standup, report string) {
 	}
 }
 
-// RunScheduler fires due standups every cycle (the per-run RunOn guard prevents
-// double-firing within the matching minute).
-func (co *Coordinator) RunScheduler() {
-	for {
-		time.Sleep(30 * time.Second)
-		sus, err := co.e.s.ListStandups("")
+// Register wires the standup tick onto the shared scheduler primitive (replacing
+// the old hand-rolled sleep loop). Standups are dynamic (added/removed at
+// runtime, each with its own time + timezone), so a single Interval job
+// evaluates which are due each tick — the per-run RunOn guard prevents
+// double-firing within the matching minute.
+func (co *Coordinator) Register(s *scheduler.Scheduler) {
+	s.Interval("standups", 30*time.Second, co.tick)
+}
+
+func (co *Coordinator) tick() {
+	sus, err := co.e.s.ListStandups("")
+	if err != nil {
+		return
+	}
+	now := time.Now()
+	for _, su := range sus {
+		loc, err := time.LoadLocation(su.Timezone)
 		if err != nil {
+			loc = time.UTC
+		}
+		n := now.In(loc)
+		var hh, mm int
+		if _, e := fmt.Sscanf(su.ScheduleTime, "%d:%d", &hh, &mm); e != nil {
 			continue
 		}
-		now := time.Now()
-		for _, su := range sus {
-			loc, err := time.LoadLocation(su.Timezone)
-			if err != nil {
-				loc = time.UTC
-			}
-			n := now.In(loc)
-			var hh, mm int
-			if _, e := fmt.Sscanf(su.ScheduleTime, "%d:%d", &hh, &mm); e != nil {
-				continue
-			}
-			if n.Hour() == hh && n.Minute() == mm {
-				go co.Run(su)
-			}
+		if n.Hour() == hh && n.Minute() == mm {
+			go co.Run(su)
 		}
-		// Weekly (Saturday) + monthly (1st) reports, at ~reportHour:00 local.
-		if now.Hour() == reportHour && now.Minute() == 0 {
-			co.runPeriodicReports(now)
-		}
+	}
+	// Weekly (Saturday) + monthly (1st) reports, at ~reportHour:00 local.
+	if now.Hour() == reportHour && now.Minute() == 0 {
+		co.runPeriodicReports(now)
 	}
 }

@@ -7,15 +7,15 @@ import (
 	"path/filepath"
 	"time"
 
-	"github.com/Zouriel/zcoms-sdk/agent"
 	"github.com/Zouriel/zcoms-team/internal/reports"
 	"github.com/Zouriel/zcoms-team/internal/store"
+	commsclient "github.com/Zouriel/zcoms/client"
 )
 
 const reportHour = 8 // weekly/monthly reports go out at ~08:00 (server local)
 
 func reportsDir() string {
-	dir, err := agent.DefaultAppDir()
+	dir, err := commsclient.DefaultAppDir()
 	if err != nil {
 		return os.TempDir()
 	}
