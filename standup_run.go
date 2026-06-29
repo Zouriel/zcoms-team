@@ -146,10 +146,8 @@ func (co *Coordinator) resolveTarget(st *store.Staff) string {
 	if co.ipc != nil && st.GithubUsername != "" {
 		if cs, err := co.ipc.ResolveContact(st.GithubUsername); err == nil {
 			for _, c := range cs {
-				for _, h := range c.Handles {
-					if h.Platform == "telegram" {
-						return h.Handle
-					}
+				if addr := c.Address("telegram"); addr != "" {
+					return addr
 				}
 			}
 		}
