@@ -3,8 +3,8 @@ module github.com/Zouriel/zcoms-team
 go 1.25.6
 
 require (
-	github.com/Zouriel/zcoms v1.0.0-comms
-	github.com/Zouriel/zcoms-agent v1.0.0
+	github.com/Zouriel/zcoms v1.1.0
+	github.com/Zouriel/zcoms-agent v1.1.0
 	github.com/go-pdf/fpdf v0.9.0
 	modernc.org/sqlite v1.53.0
 )
@@ -19,11 +19,4 @@ require (
 	modernc.org/libc v1.73.4 // indirect
 	modernc.org/mathutil v1.7.1 // indirect
 	modernc.org/memory v1.11.0 // indirect
-)
-
-// Local development: build against the in-tree comms + agent. Replaced by the
-// real published versions at release time (Phase 5).
-replace (
-	github.com/Zouriel/zcoms => ../zcoms
-	github.com/Zouriel/zcoms-agent => ../zcoms-agent
 )
