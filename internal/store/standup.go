@@ -146,7 +146,8 @@ func (s *Store) AuditRecent(limit int) ([]AuditEntry, error) {
 	}
 	rows, err := s.db.Query(
 		`SELECT actor,action,entity_type,entity_id,COALESCE(details_json,''),created_at
-		 FROM audit_logs ORDER BY created_at DESC LIMIT ?`, limit)
+		 FROM audit_logs ORDER BY created_at DESC LIMIT ?`, limit,
+	)
 	if err != nil {
 		return nil, err
 	}

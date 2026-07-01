@@ -16,10 +16,10 @@ func TestRenderPDF(t *testing.T) {
 			{Handle: "@ali", GithubUser: "ali-dev", Role: "staff", Active: 1, Completed: 2, Blocked: 1},
 			{Handle: "@zouriel", GithubUser: "zouriel", Role: "lead", Active: 1, Completed: 1},
 		},
-		Completed: []TaskLine{{Title: "Fix scheme filter", Priority: "high", Status: "Done", Assignee: "@ali"}},
-		Active:    []TaskLine{{Title: "Refactor eligibility query", Priority: "high", Status: "In Progress", Assignee: "@zouriel"}},
-		Blocked:   []TaskLine{{Title: "API integration", Priority: "critical", Status: "Blocked", Assignee: "@ali", Note: "Waiting for API review."}},
-		Backlog:   []TaskLine{{Title: "Add pagination", Priority: "medium", Status: "No update"}},
+		Completed:   []TaskLine{{Title: "Fix scheme filter", Priority: "high", Status: "Done", Assignee: "@ali"}},
+		Active:      []TaskLine{{Title: "Refactor eligibility query", Priority: "high", Status: "In Progress", Assignee: "@zouriel"}},
+		Blocked:     []TaskLine{{Title: "API integration", Priority: "critical", Status: "Blocked", Assignee: "@ali", Note: "Waiting for API review."}},
+		Backlog:     []TaskLine{{Title: "Add pagination", Priority: "medium", Status: "No update"}},
 		StandupNote: "Daily Standup Summary\n\n@ali\n  Fix scheme filter\n  Done",
 	}
 	out := filepath.Join(t.TempDir(), "r.pdf")
